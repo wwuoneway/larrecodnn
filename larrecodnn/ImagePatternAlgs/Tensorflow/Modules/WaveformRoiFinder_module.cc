@@ -54,6 +54,7 @@ public:
 private:
   art::InputTag fRawProducerLabel;
   art::InputTag fWireProducerLabel;
+  bool fSaveCNNScore;
 
   std::vector<std::unique_ptr<wavrec_tool::IWaveformRecog>> fWaveformRecogToolVec;
 
@@ -65,6 +66,7 @@ nnet::WaveformRoiFinder::WaveformRoiFinder(fhicl::ParameterSet const& p)
   : EDProducer{p}
   , fRawProducerLabel(p.get<art::InputTag>("RawProducerLabel", ""))
   , fWireProducerLabel(p.get<art::InputTag>("WireProducerLabel", ""))
+  , fSaveCNNScore(p.get<bool>("SaveCNNScore", false))
 {
   // use either raw waveform or recob waveform
   if (fRawProducerLabel.empty() && fWireProducerLabel.empty()) {
@@ -142,6 +144,10 @@ nnet::WaveformRoiFinder::produce(art::Event& e)
     std::vector<bool> inroi(fWaveformSize, false);
     inroi = fWaveformRecogToolVec[view]->findROI(inputsignal);
 
+    // www get CNN score
+    std::vector<float> cnnscore(fWaveformSize, 0.);
+    cnnscore = fWaveformRecogToolVec[view]->predROI(inputsignal);
+
     std::vector<float> sigs;
     int lastsignaltick = -1;
     int roistart = -1;
@@ -151,7 +157,12 @@ nnet::WaveformRoiFinder::produce(art::Event& e)
     for (size_t i = 0; i < fWaveformSize; ++i) {
       if (inroi[i]) {
         if (sigs.empty()) {
-          sigs.push_back(inputsignal[i]);
+          if (fSaveCNNScore) {
+            sigs.push_back(cnnscore[i]);
+          }
+          else {
+            sigs.push_back(inputsignal[i]);
+          }
           lastsignaltick = i;
           roistart = i;
         }
@@ -159,12 +170,22 @@ nnet::WaveformRoiFinder::produce(art::Event& e)
           if (int(i) != lastsignaltick + 1) {
             rois.add_range(roistart, std::move(sigs));
             sigs.clear();
-            sigs.push_back(inputsignal[i]);
+            if (fSaveCNNScore) {
+              sigs.push_back(cnnscore[i]);
+            }
+            else {
+              sigs.push_back(inputsignal[i]);
+            }
             lastsignaltick = i;
             roistart = i;
           }
           else {
-            sigs.push_back(inputsignal[i]);
+            if (fSaveCNNScore) {
+              sigs.push_back(cnnscore[i]);
+            }
+            else {
+              sigs.push_back(inputsignal[i]);
+            }
             lastsignaltick = i;
           }
         }
