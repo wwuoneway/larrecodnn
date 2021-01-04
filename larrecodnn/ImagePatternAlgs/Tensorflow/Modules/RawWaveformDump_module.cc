@@ -9,6 +9,9 @@
 //  Include the following options:
 //    a) RawDigit or WireProducer
 //    b) save full waveform or short waveform
+//    c) waveform ADC use float or short integer
+//
+//  Note: replace energy deposits with max number of electron in the windows
 //
 //////////////////////////////////////////////
 
@@ -67,6 +70,8 @@ struct WireSigInfo {
   unsigned int tdcmax;
   int numel;
   double edep;
+  double maxelectron; // maximum number of electrons at tdcmaxelectron between TrackId tdcmin, tdcmax 
+  unsigned int tdcmaxelectron;
 };
 
 namespace nnet {
@@ -100,6 +105,7 @@ private:
   std::string fDigitModuleLabel; ///< module that made digits
   std::string fWireProducerLabel;
   bool fUseFullWaveform;
+  bool fAdcUseShort;
   unsigned int fShortWaveformSize;
 
   std::string fSelectGenLabel;
@@ -169,6 +175,7 @@ nnet::RawWaveformDump::RawWaveformDump(fhicl::ParameterSet const& p)
   , fDigitModuleLabel(p.get<std::string>("DigitModuleLabel", "daq"))
   , fWireProducerLabel(p.get<std::string>("WireProducerLabel"))
   , fUseFullWaveform(p.get<bool>("UseFullWaveform", true))
+  , fAdcUseShort(p.get<bool>("AdcUseShort", true))
   , fShortWaveformSize(p.get<unsigned int>("ShortWaveformSize"))
   , fSelectGenLabel(p.get<std::string>("SelectGenLabel", "ANY"))
   , fSelectProcID(p.get<std::string>("SelectProcID", "ANY"))
@@ -251,7 +258,12 @@ nnet::RawWaveformDump::beginJob()
        i++) {
     std::ostringstream name;
     name << "tck_" << i;
-    c2numpy_addcolumn(&npywriter, name.str().c_str(), C2NUMPY_INT16);
+    if (fAdcUseShort) {
+      c2numpy_addcolumn(&npywriter, name.str().c_str(), C2NUMPY_INT16);
+    }
+    else {
+      c2numpy_addcolumn(&npywriter, name.str().c_str(), C2NUMPY_FLOAT32);
+    }
   }
 }
 
@@ -399,6 +411,9 @@ nnet::RawWaveformDump::analyze(art::Event const& evt)
 
           if (!energyDeposit.trackID) continue;
           int trkid = energyDeposit.trackID;
+
+          double electronmax = energyDeposit.numElectrons;
+
           simb::MCParticle particle = PIS->TrackIdToMotherParticle(trkid);
           //std::cout << energyDeposit.trackID << " " << trkid << " " << particle.TrackId() << std::endl;
 
@@ -418,10 +433,16 @@ nnet::RawWaveformDump::analyze(art::Event const& evt)
             wsinf.tdcmax = 0;
             wsinf.edep = 0.;
             wsinf.numel = 0;
+            wsinf.tdcmaxelectron = 0;
+            wsinf.maxelectron = 0;
             Trk2WSInfoMap.insert(std::pair<int, WireSigInfo>(trkid, wsinf));
           }
           if (tdctick < Trk2WSInfoMap.at(trkid).tdcmin) Trk2WSInfoMap.at(trkid).tdcmin = tdctick;
           if (tdctick > Trk2WSInfoMap.at(trkid).tdcmax) Trk2WSInfoMap.at(trkid).tdcmax = tdctick;
+          if (electronmax > Trk2WSInfoMap.at(trkid).maxelectron) {
+            Trk2WSInfoMap.at(trkid).maxelectron = electronmax;
+            Trk2WSInfoMap.at(trkid).tdcmaxelectron = tdctick;
+          }
           Trk2WSInfoMap.at(trkid).edep += energyDeposit.energy;
           Trk2WSInfoMap.at(trkid).numel += energyDeposit.numElectrons;
         }
@@ -441,8 +462,11 @@ nnet::RawWaveformDump::analyze(art::Event const& evt)
           itmap.second.genlab.resize(6, ' ');
           itmap.second.procid.resize(7, ' ');
           if (itmap.second.numel >= fMinNumberOfElectrons &&
+              itmap.second.maxelectron >= fMinNumberOfElectrons &&
               itmap.second.edep >= fMinEnergyDepositedMeV) {
-            if (fMaxNumberOfElectrons >= 0 && itmap.second.numel >= fMaxNumberOfElectrons) {
+            if (fMaxNumberOfElectrons >= 0 && itmap.second.numel >= fMaxNumberOfElectrons
+                && itmap.second.maxelectron >= fMaxNumberOfElectrons
+              ) {
               continue;
             }
             else {
@@ -482,7 +506,7 @@ nnet::RawWaveformDump::analyze(art::Event const& evt)
         itchn = Ch2TrkWSInfoMap.find(chnum);
         if (itchn != Ch2TrkWSInfoMap.end()) {
 
-          std::vector<short> adcvec(dataSize); // vector to hold zero-padded full waveform
+          std::vector<float> adcvec(dataSize); // vector to hold zero-padded full waveform
 
           if (rawdigitlist.size()) {
             auto search = rawdigitMap.find(chnum);
@@ -523,7 +547,8 @@ nnet::RawWaveformDump::analyze(art::Event const& evt)
             c2numpy_int32(&npywriter, it.second.pdgcode);         // pdgcode
             c2numpy_string(&npywriter, it.second.genlab.c_str()); // genlab
             c2numpy_string(&npywriter, it.second.procid.c_str()); // procid
-            c2numpy_float32(&npywriter, it.second.edep);          // edepo
+            //c2numpy_float32(&npywriter, it.second.edep);          // edepo
+            c2numpy_float32(&npywriter, it.second.maxelectron);     // maxelectron
             c2numpy_uint32(&npywriter, it.second.numel);          // numelec
 
             if (fUseFullWaveform) {
@@ -533,24 +558,28 @@ nnet::RawWaveformDump::analyze(art::Event const& evt)
             else {
               // select ticks to save
               if (icnt == 0) {
-                start_tick = it.second.tdcmin - it.second.tdcmin % fShortWaveformSize;
-                if (it.second.tdcmin - start_tick < 30) start_tick = start_tick - 30;
-                if (it.second.tdcmax - start_tick > 120) start_tick = it.second.tdcmax - 120;
-                end_tick = start_tick + fShortWaveformSize;
-
-                if (end_tick >= 2048) {
-                  end_tick = 2048;
-                  start_tick = end_tick - fShortWaveformSize;
+                // use tdcmaxelectron, in addition to tdcmin, tdcmax
+                if (it.second.tdcmax - it.second.tdcmin < fShortWaveformSize) {
+                  // include "all" in this case
+                  int dt = fShortWaveformSize - (it.second.tdcmax - it.second.tdcmin);
+                  start_tick = it.second.tdcmin - dt * gRandom->Uniform(0,1); // signal inside but can be near the left / right boundary
                 }
-
-                if (start_tick < 0) {
-                  start_tick = 0;
-                  end_tick = start_tick + fShortWaveformSize;
+                else {
+                  // use "maxelectron" to select
+                  int dt = fShortWaveformSize - 20; // tdcmax +- 10
+                  start_tick = it.second.tdcmaxelectron - 10 - dt * gRandom->Uniform(0,1);
+                }
+                if (start_tick < 0) start_tick = 0;
+                end_tick = start_tick + fShortWaveformSize - 1;
+                if (end_tick > 2047) {
+                  end_tick = 2047;
+                  start_tick = end_tick - fShortWaveformSize + 1;
                 }
               }
 
-              c2numpy_uint16(&npywriter, it.second.tdcmin - start_tick); // stck1
-              c2numpy_uint16(&npywriter, it.second.tdcmax - start_tick); // stc2
+              // for short waveform, we cannot save the tdcmin and tdcmax, since both may be outside the short window; however, tdcmaxelectron is always in, we can save its position relative to start_tick; in addtion, we save its position relative to tdcmin
+              c2numpy_uint16(&npywriter, it.second.tdcmaxelectron - start_tick); // stck1
+              c2numpy_uint16(&npywriter, it.second.tdcmaxelectron - it.second.tdcmin); // stc2
             }
 
             icnt++;
@@ -571,15 +600,29 @@ nnet::RawWaveformDump::analyze(art::Event const& evt)
 
           // .. now write out the ADC values
           if (fUseFullWaveform) {
-            for (unsigned int itck = 0; itck < dataSize; ++itck) {
-              c2numpy_int16(&npywriter, adcvec[itck]);
+            if (fAdcUseShort) {
+              for (unsigned int itck = 0; itck < dataSize; ++itck) {
+                c2numpy_int16(&npywriter, short(adcvec[itck]));
+              }
+            }
+            else {
+              for (unsigned int itck = 0; itck < dataSize; ++itck) {
+                c2numpy_float32(&npywriter, adcvec[itck]);
+              }
             }
           }
           else {
             if (start_tick == -1) return;
 
-            for (unsigned int itck = start_tick; itck < (start_tick + fShortWaveformSize); ++itck) {
-              c2numpy_int16(&npywriter, adcvec[itck]);
+            if (fAdcUseShort) {
+              for (unsigned int itck = start_tick; itck < (start_tick + fShortWaveformSize); ++itck) {
+                c2numpy_int16(&npywriter, short(adcvec[itck]));
+              }
+            }
+            else {
+              for (unsigned int itck = start_tick; itck < (start_tick + fShortWaveformSize); ++itck) {
+                c2numpy_float32(&npywriter, adcvec[itck]);
+              }
             }
           }
         }
@@ -597,7 +640,7 @@ nnet::RawWaveformDump::analyze(art::Event const& evt)
     for (size_t rdIter = 0; rdIter < (rawdigitlist.empty() ? wirelist.size() : rawdigitlist.size());
          ++rdIter) {
 
-      std::vector<short> adcvec(dataSize); // vector to wire adc values
+      std::vector<float> adcvec(dataSize); // vector to wire adc values
 
       if (rawdigitlist.size()) {
         art::Ptr<raw::RawDigit> digitVec(digitVecHandle, rdIter);
@@ -641,14 +684,28 @@ nnet::RawWaveformDump::analyze(art::Event const& evt)
       }
 
       if (fUseFullWaveform) {
-        for (unsigned int itck = 0; itck < dataSize; ++itck) {
-          c2numpy_int16(&npywriter, adcvec[itck]);
+        if (fAdcUseShort) {
+          for (unsigned int itck = 0; itck < dataSize; ++itck) {
+            c2numpy_int16(&npywriter, short(adcvec[itck]));
+          }
+        }
+        else {
+          for (unsigned int itck = 0; itck < dataSize; ++itck) {
+            c2numpy_float32(&npywriter, adcvec[itck]);
+          }
         }
       }
       else {
         int start_tick = int((2048 - fShortWaveformSize) * gRandom->Uniform(0, 1));
-        for (unsigned int itck = start_tick; itck < (start_tick + fShortWaveformSize); ++itck) {
-          c2numpy_int16(&npywriter, adcvec[itck]);
+        if (fAdcUseShort) {
+          for (unsigned int itck = start_tick; itck < (start_tick + fShortWaveformSize); ++itck) {
+            c2numpy_int16(&npywriter, short(adcvec[itck]));
+          }
+        }
+        else {
+          for (unsigned int itck = start_tick; itck < (start_tick + fShortWaveformSize); ++itck) {
+            c2numpy_float32(&npywriter, adcvec[itck]);
+          }
         }
       }
 

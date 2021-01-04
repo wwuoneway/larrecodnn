@@ -32,12 +32,16 @@ namespace wavrec_tool {
       for (unsigned int i = 0; i < fNumStrides; i++) {
         j1 = i * fStrideLength;
         if (predv[i][0] > fCnnPredCut) { std::fill_n(bvec.begin() + j1, fWindowSize, true); }
+        else { std::fill_n(bvec.begin() + j1, fWindowSize, false); } // narrow roi range
       }
       // .. last window is a special case
+      j1 = fWaveformSize - fWindowSize;
       if (predv[fNumStrides][0] > fCnnPredCut) {
-        j1 = fNumStrides * fStrideLength;
-        std::fill_n(bvec.begin() + j1, fLastWindowSize, true);
+        std::fill_n(bvec.begin() + j1, fWindowSize, true);
       }
+      else {
+        std::fill_n(bvec.begin() + j1, fWindowSize, false);
+      } // narrwo roi range
       return bvec;
     }
 
@@ -61,8 +65,8 @@ namespace wavrec_tool {
         std::fill_n(fvec.begin() + j1, fWindowSize, predv[i][0]);
       }
       // .. last window is a special case
-      j1 = fNumStrides * fStrideLength;
-      std::fill_n(fvec.begin() + j1, fLastWindowSize, predv[fNumStrides][0]);
+      j1 = fWaveformSize - fWindowSize;
+      std::fill_n(fvec.begin() + j1, fWindowSize, predv[fNumStrides][0]);
       return fvec;
     }
 
@@ -186,9 +190,9 @@ namespace wavrec_tool {
           k++;
         }
       }
-      // .. last window is a special case
-      j1 = fNumStrides * fStrideLength;
-      j2 = j1 + fLastWindowSize;
+      // .. last window is a special case: shift backward
+      j2 = fWaveformSize;
+      j1 = j2 - fWindowSize;
       k = 0;
       for (unsigned int j = j1; j < j2; j++) {
         wwv[fNumStrides][k] = adc[j];
